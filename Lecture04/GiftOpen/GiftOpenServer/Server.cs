@@ -31,6 +31,7 @@ namespace GiftOpenServer
 
     public class ClientHandler
     {
+        private readonly object _countLock = new();
         private readonly Semaphore _giftPool;
         private int _count = 0;
 
@@ -59,22 +60,31 @@ namespace GiftOpenServer
             try
             {
                 // Semaphore 내부 카운트가 내려감
-                // 만약 가능한 카운트가 없어서 대기를 하다가 타임아웃되면 false 리턴
-                bool canGive = _giftPool.WaitOne(500);
+                // 만약 가능한 카운트가 없으면 기다리지 않고 false 리턴
+                bool canGive = _giftPool.WaitOne(0);
 
                 // BitConverter: 숫자 자료형을 byte array로 변경해주거나 그 반대의 기능을 제공
                 stream.Write(BitConverter.GetBytes(canGive), 0, sizeof(bool));
 
-                if (!canGive) return;
+                if (!canGive)
+                {
+                    Console.WriteLine($"{clientAddress} -> 대기자가 많아 아이템을 받지 못함");
+                    return;
+                }
 
-                _count++;
-                int userNumber = _count;
+                // lock을 사용해서 선물 받은 숫자 count를 올림
+                int userNumber;
+                lock (_countLock)
+                {
+                    _count++;
+                    userNumber = _count;
+                }
 
                 // 데이터베이스 처리등의 시간지연을 대신해서 Sleep을 사용함
                 Thread.Sleep(1000 * 10);
 
                 stream.Write(BitConverter.GetBytes(userNumber), 0, sizeof(int));
-                Console.WriteLine($"{clientAddress}가 {userNumber}번째로 아이템을 받았습니다.");
+                Console.WriteLine($"{clientAddress} -> {userNumber}번째로 아이템을 받음");
 
                 // 할 일을 다하고 다른 스레드가 작업할 수 있도록 Release를 해서 Semaphore 카운트를 다시 올림
                 _giftPool.Release();
