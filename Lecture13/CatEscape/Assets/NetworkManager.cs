@@ -1,40 +1,86 @@
-﻿using System.Net;
+﻿using System;
+using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading;
 
 using UnityEngine;
 
 public class NetworkManager : MonoBehaviour
 {
-    private Socket _clientSocket;
-    private EndPoint _serverEndPoint;
-    private PlayerController _playerController;
+    private readonly ConcurrentQueue<string> _receivedPackets = new ConcurrentQueue<string>();
+    private readonly ConcurrentQueue<string> _packetsWaitList = new ConcurrentQueue<string>();
+    private UdpClient _client;
+    private IPEndPoint _serverEndPoint;
 
     private void Start()
     {
-        _clientSocket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        _client = new UdpClient();
         _serverEndPoint = new IPEndPoint(IPAddress.Loopback, 10200);
-        _playerController = GameObject.Find("player").GetComponent<PlayerController>();
+        _client.Connect(_serverEndPoint);
+
+        var listeningThread = new Thread(ListeningPackets)
+        {
+            IsBackground = true
+        };
+        listeningThread.Start();
+
+        var sendingThread = new Thread(SendingPackets)
+        {
+            IsBackground = true
+        };
+        sendingThread.Start();
+    }
+
+    private void ListeningPackets()
+    {
+        while (true)
+        {
+            if (_client is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                var clientEp = new IPEndPoint(IPAddress.Any, 0);
+                var buffer = _client.Receive(ref clientEp);
+                var txt = Encoding.UTF8.GetString(buffer);
+                _receivedPackets.Enqueue(txt);
+            }
+            catch (SocketException e)
+            {
+                Debug.LogError($"eror code: {e.SocketErrorCode}");
+            }
+        }
+    }
+
+    private void SendingPackets()
+    {
+        while (true)
+        {
+            if (_client is null)
+            {
+                continue;
+            }
+
+            if (!_packetsWaitList.TryDequeue(out var next))
+            {
+                continue;
+            }
+            var buffer = Encoding.UTF8.GetBytes(next);
+            _client.Send(buffer, buffer.Length);
+        }
     }
 
     public void SendData(int direction)
     {
-        var buffer = new byte[16];
-        var recvBytes = new byte[16];
+        _packetsWaitList.Enqueue(direction.ToString());
+    }
 
-        if (direction == -1)
-            buffer = Encoding.UTF8.GetBytes("-1");
-        else if (direction == 1)
-            buffer = Encoding.UTF8.GetBytes("1");
-        else
-            buffer = Encoding.UTF8.GetBytes("0");
-
-        _clientSocket.SendTo(buffer, _serverEndPoint);
-
-        var nrecv = _clientSocket.ReceiveFrom(recvBytes, ref _serverEndPoint);
-        var txt = Encoding.UTF8.GetString(recvBytes, 0, nrecv);
-
-        Debug.Log(txt);
-        _playerController.TranslateCat(txt);
+    public bool TryGetNextData(out string data)
+    {
+        return _receivedPackets.TryDequeue(out data);
     }
 }
